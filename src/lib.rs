@@ -1,6 +1,5 @@
 #![cfg_attr(not(feature = "std"),  no_std)]
 #![cfg_attr(test, deny(warnings))]
-#![deny(missing_docs)]
 //! # httparse
 //!
 //! A push library for parsing HTTP/1.x requests and responses.
@@ -266,7 +265,7 @@ impl<T> Status<T> {
 ///
 /// ```no_run
 /// let buf = b"GET /404 HTTP/1.1\r\nHost:";
-/// let mut headers = [httparse::EMPTY_HEADER; 16];
+/// let mut headers = [httparse::Header::new(); 16];
 /// let mut req = httparse::Request::new(&mut headers);
 /// let res = req.parse(buf).unwrap();
 /// if res.is_partial() {
@@ -290,13 +289,13 @@ pub struct Request<'headers, 'buf: 'headers> {
     /// The request version, such as `HTTP/1.1`.
     pub version: Option<u8>,
     /// The request headers.
-    pub headers: &'headers mut [Header<'buf>]
+    pub headers: &'headers mut [Header]
 }
 
 impl<'h, 'b> Request<'h, 'b> {
     /// Creates a new Request, using a slice of headers you allocate.
     #[inline]
-    pub fn new(headers: &'h mut [Header<'b>]) -> Request<'h, 'b> {
+    pub fn new(headers: &'h mut [Header]) -> Request<'h, 'b> {
         Request {
             method: None,
             path: None,
@@ -355,13 +354,13 @@ pub struct Response<'headers, 'buf: 'headers> {
     /// The response reason-phrase, such as `OK`.
     pub reason: Option<&'buf str>,
     /// The response headers.
-    pub headers: &'headers mut [Header<'buf>]
+    pub headers: &'headers mut [Header]
 }
 
 impl<'h, 'b> Response<'h, 'b> {
     /// Creates a new `Response` using a slice of `Header`s you have allocated.
     #[inline]
-    pub fn new(headers: &'h mut [Header<'b>]) -> Response<'h, 'b> {
+    pub fn new(headers: &'h mut [Header]) -> Response<'h, 'b> {
         Response {
             version: None,
             code: None,
@@ -410,17 +409,17 @@ impl<'h, 'b> Response<'h, 'b> {
 }
 
 /// Represents a parsed header.
-#[derive(Copy, Clone, PartialEq, Debug)]
-pub struct Header<'a> {
+#[derive(Clone, PartialEq, Debug)]
+pub struct Header {
     /// The name portion of a header.
     ///
     /// A header name must be valid ASCII-US, so it's safe to store as a `&str`.
-    pub name: &'a str,
+    pub name:  core::string::String,
     /// The value portion of a header.
     ///
     /// While headers **should** be ASCII-US, the specification allows for
     /// values that may not be, and so the value is stored as bytes.
-    pub value: &'a [u8],
+    pub value: Vec<u8>,
 }
 
 /// An empty header, useful for constructing a `Header` array to pass in for
@@ -429,9 +428,17 @@ pub struct Header<'a> {
 /// # Example
 ///
 /// ```
-/// let headers = [httparse::EMPTY_HEADER; 64];
+/// let headers = [httparse::Header::new(); 64];
 /// ```
-pub const EMPTY_HEADER: Header<'static> = Header { name: "", value: b"" };
+
+impl Header {
+    pub fn new() -> Header {
+        Header { 
+            name: std::string::String::from(""), 
+            value: Vec::new() 
+        }
+    }
+}
 
 #[inline]
 fn parse_version(bytes: &mut Bytes) -> Result<u8> {
@@ -530,22 +537,22 @@ fn parse_code(bytes: &mut Bytes) -> Result<u16> {
 ///
 /// ```
 /// let buf = b"Host: foo.bar\nAccept: */*\n\nblah blah";
-/// let mut headers = [httparse::EMPTY_HEADER; 4];
+/// let mut headers = [httparse::Header::new(); 4];
 /// assert_eq!(httparse::parse_headers(buf, &mut headers),
 ///            Ok(httparse::Status::Complete((27, &[
 ///                httparse::Header { name: "Host", value: b"foo.bar" },
 ///                httparse::Header { name: "Accept", value: b"*/*" }
 ///            ][..]))));
 /// ```
-pub fn parse_headers<'b: 'h, 'h>(src: &'b [u8], mut dst: &'h mut [Header<'b>])
-    -> Result<(usize, &'h [Header<'b>])> {
+pub fn parse_headers<'b: 'h, 'h>(src: &'b [u8], mut dst: &'h mut [Header])
+    -> Result<(usize, &'h [Header])> {
     let mut iter = Bytes::new(src);
     let pos = complete!(parse_headers_iter(&mut dst, &mut iter));
     Ok(Status::Complete((pos, dst)))
 }
 
 #[inline]
-fn parse_headers_iter<'a, 'b>(headers: &mut &mut [Header<'a>], bytes: &'b mut Bytes<'a>)
+fn parse_headers_iter<'a, 'b>(headers: &mut &mut [Header], bytes: &'b mut Bytes<'a>)
     -> Result<usize> {
     let mut num_headers: usize = 0;
     let mut count: usize = 0;
@@ -579,9 +586,9 @@ fn parse_headers_iter<'a, 'b>(headers: &mut &mut [Header<'a>], bytes: &'b mut By
                 let b = next!(bytes);
                 if b == b':' {
                     count += bytes.pos();
-                    header.name = unsafe {
+                    header.name = String::from(unsafe {
                         str::from_utf8_unchecked(bytes.slice_skip(1))
-                    };
+                    });
                     break 'name;
                 } else if !is_header_name_token(b) {
                     return Err(Error::HeaderName);
@@ -644,10 +651,10 @@ fn parse_headers_iter<'a, 'b>(headers: &mut &mut [Header<'a>], bytes: &'b mut By
             if b == b'\r' {
                 expect!(bytes.next() == b'\n' => Err(Error::HeaderValue));
                 count += bytes.pos();
-                header.value = bytes.slice_skip(2);
+                header.value = bytes.slice_skip(2).to_vec();
             } else if b == b'\n' {
                 count += bytes.pos();
-                header.value = bytes.slice_skip(1);
+                header.value = bytes.slice_skip(1).to_vec();
             } else {
                 return Err(Error::HeaderValue);
             }
@@ -738,13 +745,13 @@ pub fn parse_chunk_size(buf: &[u8])
 
 #[cfg(test)]
 mod tests {
-    use super::{Request, Response, Status, EMPTY_HEADER, shrink, parse_chunk_size};
+    use super::{Request, Response, Status, Header, shrink, parse_chunk_size};
 
     const NUM_OF_HEADERS: usize = 4;
 
     #[test]
     fn test_shrink() {
-        let mut arr = [EMPTY_HEADER; 16];
+        let mut arr = [Header::new(); 16];
         {
             let slice = &mut &mut arr[..];
             assert_eq!(slice.len(), 16);
@@ -761,7 +768,7 @@ mod tests {
         ($name:ident, $buf:expr, $len:expr, |$arg:ident| $body:expr) => (
         #[test]
         fn $name() {
-            let mut headers = [EMPTY_HEADER; NUM_OF_HEADERS];
+            let mut headers = [Header::new(); NUM_OF_HEADERS];
             let mut req = Request::new(&mut headers[..]);
             let status = req.parse($buf.as_ref());
             assert_eq!(status, $len);
@@ -871,7 +878,7 @@ mod tests {
         ($name:ident, $buf:expr, $len:expr, |$arg:ident| $body:expr) => (
         #[test]
         fn $name() {
-            let mut headers = [EMPTY_HEADER; NUM_OF_HEADERS];
+            let mut headers = [Header::new(); NUM_OF_HEADERS];
             let mut res = Response::new(&mut headers[..]);
             let status = res.parse($buf.as_ref());
             assert_eq!(status, $len);
